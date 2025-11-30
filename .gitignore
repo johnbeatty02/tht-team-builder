@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+# Virtual env
+venv/
+.env/
+
+# OS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Google secrets
+credentials.json
+token.json
+
+# Generated stuff
+stats/*.csv
+team_graphics/*.png
+reports/*
