@@ -5,7 +5,9 @@ import csv
 import io
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple, Set
+from typing import Dict, List, Tuple, Optional
+import datetime
+import os
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -61,6 +63,28 @@ GAMES: List[GameCfg] = [
     for g in GAME_CONFIGS
     if g.get("enabled", True)
 ]
+
+
+# ----------------------------------------------------------------------
+# Last-updated helper
+# ----------------------------------------------------------------------
+
+def get_last_stats_updated() -> Optional[str]:
+    """
+    Look at all CSVs in STATS_DIR and return a formatted timestamp string
+    for the most recently modified one.
+
+    Returns something like: "2025-11-30 16:12"
+    or None if no CSVs exist.
+    """
+    csv_paths = list(STATS_DIR.glob("*.csv"))
+    if not csv_paths:
+        return None
+
+    latest_mtime = max(p.stat().st_mtime for p in csv_paths)
+    dt = datetime.datetime.fromtimestamp(latest_mtime)
+    # You can customize the format or add timezone info if you want
+    return dt.strftime("%Y-%m-%d %H:%M")
 
 
 # ----------------------------------------------------------------------
@@ -130,126 +154,56 @@ if AUTO_REFRESH_STATS_ON_STARTUP:
 
 STATS_DATA = load_stats_from_csvs()
 
-# Substitution + ignore state (global for the app lifetime)
-GLOBAL_SUBSTITUTIONS: Dict[str, str] = {}  # missing_player -> replacement_ign
-GLOBAL_IGNORED: Set[str] = set()          # players to ignore entirely
-
 
 # ----------------------------------------------------------------------
-# Core recompute logic (with missing-player handling)
+# Core recompute logic
 # ----------------------------------------------------------------------
 
 def recompute_team_stats(
     teams: Dict[str, List[str]],
-    new_substitutions: Dict[str, str],
-) -> Dict:
+) -> (Dict[str, List[float]], Dict[int, List[float]]):
     """
     Given a team mapping from the UI:
 
         teams = { "Red": [...players...], "Yellow": [...], ... }
 
-    And substitutions mapping:
+    Returns:
+        per_game_avgs: dict
+            game_name -> [avg_points_red, avg_points_yellow, avg_points_green, avg_points_blue]
 
-        new_substitutions = { "MissingPlayer": "ReplacementIGN" or "" }
-
-    Returns a dict:
-      - If there are unresolved missing players:
-           {
-             "missing_players": [...],
-             "per_game_avgs": null,
-             "team_diffs": null
-           }
-
-      - Else:
-           {
-             "missing_players": [],
-             "per_game_avgs": { game_name: [avg_red, avg_yellow, avg_green, avg_blue] },
-             "team_diffs": { team_index: [diffs_for_each_non_overall_game] }
-           }
+        team_diffs: dict
+            team_index (0..3) -> [difference_per_game_excluding_overall]
     """
-    global GLOBAL_SUBSTITUTIONS, GLOBAL_IGNORED
-
-    # 1) Merge in new substitutions from the client
-    #    "" means "ignore this player globally"
-    for player, replacement in (new_substitutions or {}).items():
-        replacement = (replacement or "").strip()
-        if not replacement:
-            GLOBAL_IGNORED.add(player)
-            GLOBAL_SUBSTITUTIONS.pop(player, None)
-        else:
-            GLOBAL_SUBSTITUTIONS[player] = replacement
-            GLOBAL_IGNORED.discard(player)
-
-    team_order = TEAM_NAMES  # ["Red", "Yellow", "Green", "Blue"]
     per_game_avgs: Dict[str, List[float]] = {}
     team_totals: Dict[str, List[float]] = {}
-    missing_players: Set[str] = set()
 
-    # 2) Compute totals and averages per game, while tracking unresolved missing players
+    # Compute per-team totals and per-player averages game by game
     for game in GAMES:
         gstats = STATS_DATA.get(game.name, {})
         totals: List[float] = []
         counts: List[int] = []
 
-        for team_name in team_order:
+        for team_name in TEAM_NAMES:
             players = teams.get(team_name, [])
-            total = 0.0
-            count = 0
-
-            for p in players:
-                pname = (p or "").strip()
-                if not pname:
-                    continue
-                if pname in GLOBAL_IGNORED:
-                    # completely ignored
-                    continue
-
-                effective_player = pname
-
-                # If we have a global sub for this player, try that
-                if pname in GLOBAL_SUBSTITUTIONS:
-                    sub = GLOBAL_SUBSTITUTIONS[pname]
-                    if sub in gstats:
-                        effective_player = sub
-                    else:
-                        # substitution not present in this game's stats → still missing
-                        missing_players.add(pname)
-                        continue
-                else:
-                    # No substitution configured yet
-                    if pname not in gstats:
-                        missing_players.add(pname)
-                        continue
-
-                pts = float(gstats.get(effective_player, 0.0))
-                total += pts
-                count += 1
-
+            pts_list = [gstats.get(p, 0.0) for p in players if p.strip()]
+            total = float(sum(pts_list))
+            count = len(pts_list)
             totals.append(total)
             counts.append(count)
 
         team_totals[game.name] = totals
 
-        # We'll compute averages *only* if we ultimately have no missing players
-        # (but we can precompute here too)
         avgs_for_game: List[float] = []
         for total, count in zip(totals, counts):
             if count == 0:
                 avgs_for_game.append(0.0)
             else:
                 avgs_for_game.append(round(total / count, 2))
+
         per_game_avgs[game.name] = avgs_for_game
 
-    # 3) If there are unresolved missing players, stop here and tell the UI
-    if missing_players:
-        return {
-            "missing_players": sorted(missing_players),
-            "per_game_avgs": None,
-            "team_diffs": None,
-        }
-
-    # 4) Compute per-team differentials (team total – average team total) for non-Overall games
-    diffs: Dict[int, List[float]] = {idx: [] for idx in range(len(team_order))}
+    # Compute per-team differentials (team total – average team total) for non-Overall games
+    diffs: Dict[int, List[float]] = {idx: [] for idx in range(len(TEAM_NAMES))}
     for game in GAMES:
         if game.name.lower() == "overall":
             continue
@@ -257,14 +211,10 @@ def recompute_team_stats(
         totals = team_totals[game.name]
         avg_total = float(np.mean(totals)) if totals else 0.0
 
-        for idx in range(len(team_order)):
+        for idx in range(len(TEAM_NAMES)):
             diffs[idx].append(totals[idx] - avg_total)
 
-    return {
-        "missing_players": [],
-        "per_game_avgs": per_game_avgs,
-        "team_diffs": diffs,
-    }
+    return per_game_avgs, diffs
 
 
 # ----------------------------------------------------------------------
@@ -643,11 +593,23 @@ TEMPLATE = """
       justify-content: space-between;
       align-items: center;
       margin-bottom: 8px;
+      gap: 10px;
+    }
+
+    .top-bar-left {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
     }
 
     .top-bar-title {
       font-size: 16px;
       font-weight: 500;
+    }
+
+    .last-updated {
+      font-size: 11px;
+      color: var(--text-muted);
     }
 
     .legend {
@@ -658,6 +620,7 @@ TEMPLATE = """
       border-radius: 999px;
       padding: 4px 10px;
       border: 1px solid rgba(148,163,184,0.3);
+      white-space: nowrap;
     }
 
     .legend-item {
@@ -730,95 +693,6 @@ TEMPLATE = """
       image-rendering: auto;
     }
 
-    /* Missing players modal */
-
-    .modal-backdrop {
-      position: fixed;
-      inset: 0;
-      background: rgba(15,23,42,0.75);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 40;
-    }
-    .modal-backdrop.hidden {
-      display: none;
-    }
-
-    .modal {
-      background: radial-gradient(circle at top, #020617, #020617 60%);
-      border-radius: 14px;
-      border: 1px solid rgba(148,163,184,0.7);
-      box-shadow: 0 18px 45px rgba(15,23,42,0.9);
-      padding: 14px 16px 12px;
-      width: 360px;
-      max-width: 90vw;
-      color: var(--text-main);
-    }
-
-    .modal h2 {
-      margin: 0 0 4px;
-      font-size: 15px;
-      font-weight: 600;
-    }
-
-    .modal p {
-      margin: 0 0 8px;
-      font-size: 12px;
-      color: var(--text-muted);
-    }
-
-    .missing-list {
-      max-height: 200px;
-      overflow-y: auto;
-      margin-bottom: 8px;
-      padding-right: 2px;
-    }
-
-    .missing-row {
-      display: flex;
-      flex-direction: column;
-      gap: 3px;
-      padding: 5px 0;
-      border-bottom: 1px solid rgba(31,41,55,0.7);
-    }
-
-    .missing-name {
-      font-size: 12px;
-      font-weight: 500;
-    }
-
-    .missing-input {
-      width: 100%;
-      border-radius: 7px;
-      border: 1px solid rgba(31,41,55,0.9);
-      background: rgba(15,23,42,0.85);
-      color: var(--text-main);
-      font-size: 11px;
-      padding: 5px 7px;
-      outline: none;
-    }
-    .missing-input::placeholder {
-      color: #6b7280;
-    }
-    .missing-input:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 1px var(--accent-soft);
-    }
-
-    .modal-actions {
-      display: flex;
-      justify-content: flex-end;
-      gap: 6px;
-      margin-top: 4px;
-    }
-
-    .modal-hint {
-      margin-top: 6px;
-      font-size: 11px;
-      color: var(--text-muted);
-    }
-
     @media (max-width: 980px) {
       .layout {
         flex-direction: column;
@@ -834,6 +708,9 @@ TEMPLATE = """
       }
       .graphs-layout {
         height: auto;
+      }
+      .legend {
+        margin-left: auto;
       }
     }
   </style>
@@ -894,7 +771,17 @@ CluelessGamer18, JJ22FTW, QuinnQuimby, ..."></textarea>
   <!-- RIGHT PANEL -->
   <main class="right-panel">
     <div class="top-bar">
-      <div class="top-bar-title">Live Team Analytics</div>
+      <div class="top-bar-left">
+        <div class="top-bar-title">Live Team Analytics</div>
+        <div class="last-updated">
+          Stats last updated:
+          {% if last_updated %}
+            {{ last_updated }}
+          {% else %}
+            (no CSVs found)
+          {% endif %}
+        </div>
+      </div>
       <div class="legend">
         {% for item in legend_items %}
         <div class="legend-item">
@@ -929,34 +816,9 @@ CluelessGamer18, JJ22FTW, QuinnQuimby, ..."></textarea>
   </main>
 </div>
 
-<!-- Missing players modal -->
-<div id="missing-backdrop" class="modal-backdrop hidden">
-  <div class="modal">
-    <h2>Missing players in stat pool</h2>
-    <p>
-      These players are not present in the stat sheets. Enter a replacement IGN
-      (with stats) or leave blank to ignore that player in all games.
-    </p>
-    <form id="missing-form">
-      <div id="missing-list" class="missing-list"></div>
-      <div class="modal-actions">
-        <button type="button" class="secondary" id="missing-cancel">Cancel</button>
-        <button type="submit">Apply &amp; recompute</button>
-      </div>
-      <p class="modal-hint">
-        Replacements will be used for that player across all gamemodes. Ignored
-        players will not affect any averages.
-      </p>
-    </form>
-  </div>
-</div>
-
 <script>
   const TEAM_NAMES = {{ team_names | tojson }};
   let draggedEl = null;
-
-  // client-side record of substitutions (player -> replacement IGN or "")
-  window.currentSubstitutions = {};
 
   function createPlayerElement(name) {
     const div = document.createElement('div');
@@ -1057,81 +919,16 @@ CluelessGamer18, JJ22FTW, QuinnQuimby, ..."></textarea>
     return teams;
   }
 
-  // ---------- Missing players modal ----------
-
-  function showMissingModal(missingPlayers) {
-    const backdrop = document.getElementById('missing-backdrop');
-    const list = document.getElementById('missing-list');
-    list.innerHTML = '';
-
-    missingPlayers.forEach(player => {
-      const row = document.createElement('div');
-      row.className = 'missing-row';
-
-      const label = document.createElement('span');
-      label.className = 'missing-name';
-      label.textContent = player;
-
-      const input = document.createElement('input');
-      input.className = 'missing-input';
-      input.name = player;
-      input.placeholder = "Replacement IGN (blank = ignore)";
-
-      row.appendChild(label);
-      row.appendChild(input);
-      list.appendChild(row);
-    });
-
-    backdrop.classList.remove('hidden');
-  }
-
-  document.getElementById('missing-cancel').addEventListener('click', () => {
-    document.getElementById('missing-backdrop').classList.add('hidden');
-  });
-
-  document.getElementById('missing-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const form = e.target;
-    const inputs = form.querySelectorAll('.missing-input');
-
-    const newSubs = {};
-    inputs.forEach(input => {
-      newSubs[input.name] = (input.value || '').trim(); // "" means ignore
-    });
-
-    // Merge into global map
-    window.currentSubstitutions = {
-      ...(window.currentSubstitutions || {}),
-      ...newSubs,
-    };
-
-    document.getElementById('missing-backdrop').classList.add('hidden');
-
-    await recalc();
-  });
-
-  // ---------- Recalc ----------
-
   async function recalc() {
     const teams = collectTeamsFromDOM();
     try {
       const resp = await fetch('/api/recalc', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          teams: teams,
-          substitutions: window.currentSubstitutions || {}
-        }),
+        body: JSON.stringify({ teams }),
       });
       if (!resp.ok) return;
       const data = await resp.json();
-
-      if (data.missing_players && data.missing_players.length > 0) {
-        // Show modal; do not overwrite graphs yet
-        showMissingModal(data.missing_players);
-        return;
-      }
-
       if (data.per_game_img) {
         document.getElementById('per-game-img').src = data.per_game_img;
       }
@@ -1153,47 +950,35 @@ CluelessGamer18, JJ22FTW, QuinnQuimby, ..."></textarea>
 
 @app.route("/", methods=["GET"])
 def index():
+    last_updated = get_last_stats_updated()
     return render_template_string(
         TEMPLATE,
         team_names=TEAM_NAMES,
         legend_items=TEAM_HEX_ITEMS,
+        last_updated=last_updated,
     )
 
 
 @app.route("/api/recalc", methods=["POST"])
 def api_recalc():
     data = request.get_json(force=True)
-    teams = data.get("teams", {}) or {}
-    substitutions = data.get("substitutions", {}) or {}
+    teams = data.get("teams", {})
 
-    # Ensure all names exist as keys
     for name in TEAM_NAMES:
         teams.setdefault(name, [])
 
-    result = recompute_team_stats(teams, substitutions)
-
-    if result["missing_players"]:
-        # Missing players → tell frontend to show modal; no new graphs yet
-        return jsonify(
-            ok=True,
-            missing_players=result["missing_players"],
-            per_game_img=None,
-            diff_img=None,
-        )
-
-    per_game_avgs = result["per_game_avgs"]
-    team_diffs = result["team_diffs"]
+    per_game_avgs, team_diffs = recompute_team_stats(teams)
 
     per_game_img = plot_all_games(per_game_avgs)
     diff_img = plot_differentials(team_diffs)
 
     return jsonify(
         ok=True,
-        missing_players=[],
         per_game_img=per_game_img,
         diff_img=diff_img,
     )
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=True)

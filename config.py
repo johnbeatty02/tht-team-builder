@@ -26,29 +26,21 @@ TEAM_RANGES = [
 # Directories / Paths
 # -------------------------------
 
-# Where CSV stat files are stored
-STATS_DIR = Path(
-    "/Users/johnbeatty/PycharmProjects/statCheckerv3/stats"
-)
+BASE_DIR = Path(__file__).resolve().parent
+
+STATS_DIR = BASE_DIR / "stats"
 
 # Where Minecraft heads are downloaded
-HEAD_LOCATION = Path(
-    "/Users/johnbeatty/PycharmProjects/statCheckerv3/team_graphics/heads"
-)
+HEAD_LOCATION = BASE_DIR / "team_graphics" / "heads"
 
 # Where generated team graphics go (team PNGs + allGames/differentials)
-TEAM_GRAPHICS_DIR = Path(
-    "/Users/johnbeatty/PycharmProjects/statCheckerv3/team_graphics"
-)
+TEAM_GRAPHICS_DIR = BASE_DIR / "team_graphics"
 
 # Where final summary reports are written (directory)
-FINAL_REPORT_PATH = Path(
-    "/Users/johnbeatty/PycharmProjects/statCheckerv3/reports"
-)
+FINAL_REPORT_PATH = BASE_DIR / "reports"
+
 # Where the final combined sheet (teams + graphs) is saved
-FINAL_REPORT_DIR = Path(
-    "/Users/johnbeatty/PycharmProjects/statCheckerv3/reports"
-)
+FINAL_REPORT_DIR = BASE_DIR / "reports"
 
 FINAL_REPORT_FILENAME = "team_report.png"
 
@@ -63,13 +55,10 @@ AVATAR_SIZE = 256
 # Fonts
 # -------------------------------
 
-PLAYER_FONT_PATH = Path(
-    "/Users/johnbeatty/PycharmProjects/statCheckerv3/team_graphics/fonts/Minecraft Regular.otf"
-)
+PLAYER_FONT_PATH = BASE_DIR / "team_graphics" / "fonts" / "Minecraft Regular.otf"
 
-TITLE_FONT_PATH = Path(
-    "/Users/johnbeatty/PycharmProjects/statCheckerv3/team_graphics/fonts/Minecraft Evenings.ttf"
-)
+TITLE_FONT_PATH = BASE_DIR / "team_graphics" / "fonts" / "Minecraft Evenings.ttf"
+
 
 # ----------------------------------------
 # CSV column definitions for stats output
