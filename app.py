@@ -752,7 +752,7 @@ CluelessGamer18, JJ22FTW, QuinnQuimby, ..."></textarea>
       </div>
     </section>
 
-    <section class="teams-card">
+        <section class="teams-card">
       <div class="section-label">Teams</div>
       <div class="teams-grid">
         {% for name in team_names %}
@@ -764,6 +764,13 @@ CluelessGamer18, JJ22FTW, QuinnQuimby, ..."></textarea>
           <div id="team-{{ name }}" class="player-list dropzone"></div>
         </div>
         {% endfor %}
+      </div>
+
+      <!-- New: explicit recompute button -->
+      <div class="button-row" style="margin-top: 8px;">
+        <button onclick="recalc()">
+          <span>Generate graphs</span>
+        </button>
       </div>
     </section>
   </aside>
@@ -861,14 +868,14 @@ CluelessGamer18, JJ22FTW, QuinnQuimby, ..."></textarea>
       pool.appendChild(createPlayerElement(name));
     }
 
-    recalc();
+    // no auto recalc
   }
 
   function clearTeams() {
     TEAM_NAMES.forEach(t => {
       document.getElementById('team-' + t).innerHTML = '';
     });
-    recalc();
+    // no auto recalc
   }
 
   // Drag & drop
@@ -901,7 +908,7 @@ CluelessGamer18, JJ22FTW, QuinnQuimby, ..."></textarea>
       zone.classList.remove('drag-over');
       if (draggedEl) {
         zone.appendChild(draggedEl);
-        recalc();
+        // no auto recalc
       }
     });
   });
@@ -940,8 +947,6 @@ CluelessGamer18, JJ22FTW, QuinnQuimby, ..."></textarea>
     }
   }
 
-  // Initial empty state
-  recalc();
 </script>
 </body>
 </html>
