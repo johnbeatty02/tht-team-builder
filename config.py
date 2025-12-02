@@ -1,18 +1,54 @@
 from pathlib import Path
+import os
+import json
 
 # -------------------------------
 # Google Sheets API
 # -------------------------------
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 
-CREDENTIALS_PATH = Path("credentials.json")
-TOKEN_PATH = Path("token.json")
+BASE_DIR = Path(__file__).resolve().parent
+
+# ----------------------------------------
+# Credentials handling (local vs Render)
+# ----------------------------------------
+#
+# If running on Render:
+#   - GOOGLE_CREDENTIALS contains the full JSON of credentials.json
+#   - GOOGLE_TOKEN contains the full JSON of token.json
+#
+# We write them into ephemeral files at runtime so googleapiclient can use them.
+#
+# If running locally:
+#   - Fall back to credentials.json and token.json normally
+
+
+# --- Credentials.json ---
+if os.environ.get("GOOGLE_CREDENTIALS"):
+    # Running on Render
+    creds_file = BASE_DIR / "credentials.json"
+    creds_file.write_text(os.environ["GOOGLE_CREDENTIALS"], encoding="utf-8")
+    CREDENTIALS_PATH = creds_file
+else:
+    # Local development
+    CREDENTIALS_PATH = Path("credentials.json")
+
+
+# --- Token.json ---
+if os.environ.get("GOOGLE_TOKEN"):
+    # Running on Render
+    token_file = BASE_DIR / "token.json"
+    token_file.write_text(os.environ["GOOGLE_TOKEN"], encoding="utf-8")
+    TOKEN_PATH = token_file
+else:
+    # Local development
+    TOKEN_PATH = Path("token.json")
 
 # Team list spreadsheet
 TEAMS_SPREADSHEET_ID = "1yJZMiaxCBvMe-D9sHCpgDgbu7wuo2xvxkj9ckLQEriA"
 
-# Per-player stats spreadsheet (Season 6)
-STATS_SPREADSHEET_ID = "1iWdp2IXRYcy7fjIFSqwQ1kdxQAjAS7SE5hzo82olMJ4"
+# Per-player stats spreadsheet (Season 7)
+STATS_SPREADSHEET_ID = "1qhaOBnESHjYchaORuYl20kLMxjC0kOlM8XWRxTcEXTs"
 
 # Ranges containing team name + 4 players
 TEAM_RANGES = [
@@ -89,7 +125,7 @@ GAME_CONFIGS = [
         "short_label": "All",  # label used in the diff graph
         "csv": "overall.csv",
         "csv_name": "overall.csv",
-        "sheet_range": "Main!C23:D52",
+        "sheet_range": "Main!P3:Q52",
         "is_overall": True,
         "is_pvp": False,
         "is_non_pvp": False,
@@ -104,7 +140,7 @@ GAME_CONFIGS = [
         "short_label": "BW",
         "csv": "bedwars.csv",
         "csv_name": "bedwars.csv",
-        "sheet_range": "Bedwars!C22:D51",
+        "sheet_range": "Bedwars!P3:Q52",
         "is_pvp": True,
         "is_non_pvp": False,
         "is_non_pvp_aggregate": False,
@@ -118,7 +154,7 @@ GAME_CONFIGS = [
         "short_label": "BD",
         "csv": "bridgeDuels.csv",
         "csv_name": "bridgeDuels.csv",
-        "sheet_range": "Bridge Duels!C22:D51",
+        "sheet_range": "Bridge Duels!P3:Q52",
         "is_pvp": True,
         "is_non_pvp": False,
         "is_non_pvp_aggregate": False,
@@ -132,7 +168,7 @@ GAME_CONFIGS = [
         "short_label": "BB",
         "csv": "buildBattle.csv",
         "csv_name": "buildBattle.csv",
-        "sheet_range": "Build Battle!C22:D51",
+        "sheet_range": "Build Battle!P3:Q52",
         "is_pvp": False,
         "is_non_pvp": True,
         "is_non_pvp_aggregate": False,
@@ -146,7 +182,7 @@ GAME_CONFIGS = [
         "short_label": "MW",
         "csv": "miniWalls.csv",
         "csv_name": "miniWalls.csv",
-        "sheet_range": "Mini Walls!C22:D50",
+        "sheet_range": "Mini Walls!P3:Q52",
         "is_pvp": True,
         "is_non_pvp": False,
         "is_non_pvp_aggregate": False,
@@ -160,7 +196,7 @@ GAME_CONFIGS = [
         "short_label": "PD",
         "csv": "parkourDuels.csv",
         "csv_name": "parkourDuels.csv",
-        "sheet_range": "Parkour Duels!C22:D51",
+        "sheet_range": "Parkour Duels!P3:Q52",
         "is_pvp": False,
         "is_non_pvp": True,
         "is_non_pvp_aggregate": False,
@@ -174,7 +210,7 @@ GAME_CONFIGS = [
         "short_label": "PG",
         "csv": "partyGames.csv",
         "csv_name": "partyGames.csv",
-        "sheet_range": "Party Games!C22:D50",
+        "sheet_range": "Party Games!P3:Q52",
         "is_pvp": False,
         "is_non_pvp": True,
         "is_non_pvp_aggregate": False,
@@ -188,7 +224,7 @@ GAME_CONFIGS = [
         "short_label": "SW",
         "csv": "skywars.csv",
         "csv_name": "skywars.csv",
-        "sheet_range": "Skywars!C22:D50",
+        "sheet_range": "Skywars!P3:Q52",
         "is_pvp": True,
         "is_non_pvp": False,
         "is_non_pvp_aggregate": False,
@@ -202,7 +238,7 @@ GAME_CONFIGS = [
         "short_label": "SG",
         "csv": "survivalGames.csv",
         "csv_name": "survivalGames.csv",
-        "sheet_range": "Survival Games!C22:D51",
+        "sheet_range": "Survival Games!P3:Q52",
         "is_pvp": True,
         "is_non_pvp": False,
         "is_non_pvp_aggregate": False,
@@ -216,7 +252,7 @@ GAME_CONFIGS = [
         "short_label": "UD",
         "csv": "uhcDuels.csv",
         "csv_name": "uhcDuels.csv",
-        "sheet_range": "UHC Duels!C22:D50",
+        "sheet_range": "UHC Duels!P3:Q52",
         "is_pvp": True,
         "is_non_pvp": False,
         "is_non_pvp_aggregate": False,
@@ -230,7 +266,7 @@ GAME_CONFIGS = [
         "short_label": "WO",
         "csv": "wobtafitv.csv",
         "csv_name": "wobtafitv.csv",
-        "sheet_range": "WOBTAFITV!C22:D50",
+        "sheet_range": "WOBTAFITV!P3:Q52",
         "is_pvp": False,
         "is_non_pvp": True,
         "is_non_pvp_aggregate": False,
@@ -244,12 +280,12 @@ GAME_CONFIGS = [
         "short_label": "PvP",
         "csv": "pvp.csv",
         "csv_name": "pvp.csv",
-        "sheet_range": "PvP!C22:D51",
+        "sheet_range": "PvP!P3:Q52",
         "is_pvp": False,               # already aggregate
         "is_non_pvp": False,
         "is_non_pvp_aggregate": False,
         "include_in_differentials": True,
-        "enabled": True,
+        "enabled": False,
     },
     {
         "key": "non_pvp",
@@ -258,12 +294,12 @@ GAME_CONFIGS = [
         "short_label": "nP",
         "csv": "nonPvP.csv",
         "csv_name": "nonPvP.csv",
-        "sheet_range": "Non-PvP!C22:D51",
+        "sheet_range": "Non-PvP!P3:Q52",
         "is_pvp": False,
         "is_non_pvp": False,           # this row is the aggregate
         "is_non_pvp_aggregate": True,  # used for averaging logic
         "include_in_differentials": True,
-        "enabled": True,
+        "enabled": False,
     },
 ]
 
