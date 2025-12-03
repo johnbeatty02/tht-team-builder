@@ -85,7 +85,7 @@ def get_last_stats_updated() -> Optional[str]:
 
     latest_mtime = max(p.stat().st_mtime for p in csv_paths)
     dt = datetime.datetime.fromtimestamp(latest_mtime, TZ_EST)
-    return dt.strftime("%Y-%m-%d %H:%M ET")
+    return dt.strftime("%Y-%m-%d %H:%M")
 
 
 # ----------------------------------------------------------------------
@@ -888,14 +888,14 @@ lgmusicfan, LethalPilot, IceKing12323, ..."></textarea>
         <div class="last-updated">
           Stats last updated:
           {% if last_updated %}
-            {{ last_updated }}
+            {{ last_updated }} EST
           {% else %}
             (no CSVs found)
           {% endif %}
         </div>
-        <div class="last-updated">
-          Last graphs recalculated:
-          <span id="last-recalc-text">(not yet this session)</span>
+        <div class="last-updated" id="graphs-last-recalc">
+          Graphs last recalculated:
+          <span id="last-recalc-text">(never)</span>
         </div>
       </div>
       <div class="legend">
@@ -1116,28 +1116,27 @@ lgmusicfan, LethalPilot, IceKing12323, ..."></textarea>
       });
       if (!resp.ok) return;
       const data = await resp.json();
-
-      if (data.needs_subs && data.missing_players && data.missing_players.length > 0) {
-        const player = data.missing_players[0];
-        const candidates = data.candidates || [];
-        showSubModal(player, candidates);
-        return;
-      }
-
-      if (data.per_game_img) {
-        document.getElementById('per-game-img').src = data.per_game_img;
-      }
-      if (data.diff_img) {
-        document.getElementById('diff-img').src = data.diff_img;
-      }
-      
-      //NEW: update "Last graphs recalculated"
-      if (data.last_recalc) {
-        const el = document.getElementById('last-recalc-text');
-        if (el) {
-            el.textContent = data.last_recalc;
+        
+        if (data.needs_subs && data.missing_players && data.missing_players.length > 0) {
+          const player = data.missing_players[0];
+          const candidates = data.candidates || [];
+          showSubModal(player, candidates);
+          return;
         }
-      }
+        
+        // Update graphs
+        if (data.per_game_img) {
+          document.getElementById('per-game-img').src = data.per_game_img;
+        }
+        if (data.diff_img) {
+          document.getElementById('diff-img').src = data.diff_img;
+        }
+        
+        // NEW: update "Graphs last recalculated" label
+        const graphsLabel = document.getElementById('graphs-last-recalc');
+        if (graphsLabel && data.graphs_last_recalc) {
+          graphsLabel.textContent = 'Graphs last recalculated: ' + data.graphs_last_recalc;
+        }
     } catch (err) {
       console.error('Recalc error', err);
     }
@@ -1189,11 +1188,17 @@ def api_recalc():
     per_game_img = plot_all_games(per_game_avgs)
     diff_img = plot_differentials(team_diffs)
 
+    # NEW: compute EST timestamp on the server
+    est_now = datetime.datetime.now(ZoneInfo("America/New_York")).strftime(
+        "%Y-%m-%d %H:%M:%S EST"
+    )
+
     return jsonify(
         ok=True,
         needs_subs=False,
         per_game_img=per_game_img,
         diff_img=diff_img,
+        graphs_last_recalc=est_now,
     )
 
 
