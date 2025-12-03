@@ -284,7 +284,7 @@ GAME_CONFIGS = [
         "is_pvp": False,               # already aggregate
         "is_non_pvp": False,
         "is_non_pvp_aggregate": False,
-        "include_in_differentials": True,
+        "include_in_differentials": False,
         "enabled": False,
     },
     {
@@ -298,7 +298,7 @@ GAME_CONFIGS = [
         "is_pvp": False,
         "is_non_pvp": False,           # this row is the aggregate
         "is_non_pvp_aggregate": True,  # used for averaging logic
-        "include_in_differentials": True,
+        "include_in_differentials": False,
         "enabled": False,
     },
 ]

@@ -5,9 +5,10 @@ import csv
 import io
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Set
 import datetime
 import os
+from zoneinfo import ZoneInfo
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -64,6 +65,7 @@ GAMES: List[GameCfg] = [
     if g.get("enabled", True)
 ]
 
+TZ_EST = ZoneInfo("America/New_York")
 
 # ----------------------------------------------------------------------
 # Last-updated helper
@@ -82,9 +84,8 @@ def get_last_stats_updated() -> Optional[str]:
         return None
 
     latest_mtime = max(p.stat().st_mtime for p in csv_paths)
-    dt = datetime.datetime.fromtimestamp(latest_mtime)
-    # You can customize the format or add timezone info if you want
-    return dt.strftime("%Y-%m-%d %H:%M")
+    dt = datetime.datetime.fromtimestamp(latest_mtime, TZ_EST)
+    return dt.strftime("%Y-%m-%d %H:%M ET")
 
 
 # ----------------------------------------------------------------------
@@ -154,18 +155,29 @@ if AUTO_REFRESH_STATS_ON_STARTUP:
 
 STATS_DATA = load_stats_from_csvs()
 
+# All players that appear in ANY stats CSV
+ALL_STAT_PLAYERS: List[str] = sorted(
+    {player for game_map in STATS_DATA.values() for player in game_map.keys()}
+)
+
 
 # ----------------------------------------------------------------------
-# Core recompute logic
+# Core recompute logic (with subs + ignores)
 # ----------------------------------------------------------------------
 
 def recompute_team_stats(
     teams: Dict[str, List[str]],
-) -> (Dict[str, List[float]], Dict[int, List[float]]):
+    subs: Optional[Dict[str, str]] = None,
+    ignored: Optional[Set[str]] = None,
+) -> Tuple[Dict[str, List[float]], Dict[int, List[float]], Set[str]]:
     """
     Given a team mapping from the UI:
 
         teams = { "Red": [...players...], "Yellow": [...], ... }
+
+    and optional:
+        subs   = { "MissingPlayer": "KnownPlayerIGN", ... }
+        ignored = set(["SomeIGN", ...])
 
     Returns:
         per_game_avgs: dict
@@ -173,9 +185,17 @@ def recompute_team_stats(
 
         team_diffs: dict
             team_index (0..3) -> [difference_per_game_excluding_overall]
+
+        missing_players: set of IGN strings that had no stats and no sub/ignore
     """
+    if subs is None:
+        subs = {}
+    if ignored is None:
+        ignored = set()
+
     per_game_avgs: Dict[str, List[float]] = {}
     team_totals: Dict[str, List[float]] = {}
+    missing_players: Set[str] = set()
 
     # Compute per-team totals and per-player averages game by game
     for game in GAMES:
@@ -185,9 +205,41 @@ def recompute_team_stats(
 
         for team_name in TEAM_NAMES:
             players = teams.get(team_name, [])
-            pts_list = [gstats.get(p, 0.0) for p in players if p.strip()]
-            total = float(sum(pts_list))
-            count = len(pts_list)
+            total = 0.0
+            count = 0
+
+            for player in players:
+                player = (player or "").strip()
+                if not player:
+                    continue
+
+                # If globally ignored → skip entirely
+                if player in ignored:
+                    continue
+
+                # Sub mapping?
+                if player in subs:
+                    sub_ign = subs[player]
+                    # If sub_ign is a special ignore marker, skip
+                    if sub_ign is None or sub_ign == "__ignore__":
+                        continue
+                    if sub_ign in gstats:
+                        total += gstats[sub_ign]
+                        count += 1
+                    else:
+                        # Sub has no stats for this game → treat as 0, don't increment count
+                        continue
+                    continue
+
+                # Direct stats available?
+                if player in gstats:
+                    total += gstats[player]
+                    count += 1
+                    continue
+
+                # No stats and no sub/ignore → record as missing, skip for now
+                missing_players.add(player)
+
             totals.append(total)
             counts.append(count)
 
@@ -214,7 +266,7 @@ def recompute_team_stats(
         for idx in range(len(TEAM_NAMES)):
             diffs[idx].append(totals[idx] - avg_total)
 
-    return per_game_avgs, diffs
+    return per_game_avgs, diffs, missing_players
 
 
 # ----------------------------------------------------------------------
@@ -233,28 +285,21 @@ def fig_to_data_url(fig) -> str:
 
 def plot_all_games(per_game_avgs: Dict[str, List[float]]) -> str:
     """
-    Redesigned grid of per-game averages.
-
-    - 4×3 grid of mini charts
-    - Game name appears inside each subplot
-    - Clean look (no axes labels, just relative bars)
+    4×3 grid of per-game average points (Overall included).
     """
     rows, cols = 4, 3
     fig, axs = plt.subplots(rows, cols, figsize=(11, 6))
     axs_flat = axs.flatten()
     labels = np.arange(1, len(TEAM_NAMES) + 1)
 
-    # Soft background
     fig.patch.set_facecolor("#fafafa")
 
     for idx, game in enumerate(GAMES[: rows * cols]):
         ax = axs_flat[idx]
         vals = per_game_avgs.get(game.name, [0.0] * len(TEAM_NAMES))
 
-        # Draw bars
         ax.bar(labels, vals, color=TEAM_COLOR_SEQ)
 
-        # Game label
         ax.text(
             0.02,
             0.93,
@@ -265,7 +310,6 @@ def plot_all_games(per_game_avgs: Dict[str, List[float]]) -> str:
             va="top",
         )
 
-        # Y-limits
         if any(vals):
             ymin = min(vals) * 0.9
             ymax = max(vals) * 1.1
@@ -273,7 +317,6 @@ def plot_all_games(per_game_avgs: Dict[str, List[float]]) -> str:
                 ymin, ymax = -1, 1
             ax.set_ylim(ymin, ymax)
 
-        # Clean axes
         ax.set_xticks([])
         ax.set_yticks([])
         for spine in ax.spines.values():
@@ -291,10 +334,7 @@ def plot_all_games(per_game_avgs: Dict[str, List[float]]) -> str:
 def plot_differentials(team_diffs: Dict[int, List[float]]) -> str:
     """
     2×2 grid of differential charts (one per team).
-
-    - Horizontal layout for labels
-    - Shared style, consistent spacing
-    - No team labels text on plots; colors + legend handle that
+    Overall is excluded.
     """
     games_for_diff = [g for g in GAMES if g.name.lower() != "overall"]
     short_labels = [g.short for g in games_for_diff]
@@ -305,31 +345,25 @@ def plot_differentials(team_diffs: Dict[int, List[float]]) -> str:
 
     for team_idx, ax in enumerate(axs_flat):
         diffs = team_diffs.get(team_idx, [])
-        # Match number of labels
         diffs = diffs[: len(short_labels)]
         x = np.arange(len(short_labels))
 
         ax.bar(x, diffs, color=TEAM_COLOR_SEQ[team_idx])
 
-        # Zero line
         ax.axhline(0, color="#444444", linewidth=0.8, alpha=0.6)
 
-        # X labels
         ax.set_xticks(x)
         ax.set_xticklabels(short_labels, rotation=40, ha="right", fontsize=8)
 
-        # Y range
         ymin = min(diffs + [0]) * 1.15
         ymax = max(diffs + [0]) * 1.15
         if ymin == ymax:
             ymin, ymax = -1, 1
         ax.set_ylim(ymin, ymax)
 
-        # Subtle grid
         ax.yaxis.grid(True, linestyle=":", linewidth=0.5, alpha=0.3)
         ax.set_axisbelow(True)
 
-        # Remove frame style noise
         for spine in ax.spines.values():
             spine.set_alpha(0.4)
 
@@ -481,6 +515,7 @@ TEMPLATE = """
       display: flex;
       gap: 6px;
       margin-top: 7px;
+      flex-wrap: wrap;
     }
 
     button {
@@ -513,6 +548,18 @@ TEMPLATE = """
       background: rgba(15,23,42,0.5);
       color: var(--text-main);
     }
+    button.primary-green {
+      background: #22c55e; /* green */
+    color: #0b1120;
+    border-color: transparent;
+    box-shadow: 0 8px 20px rgba(34, 197, 94, 0.45);
+    }
+
+button.primary-green:hover {
+  background: #16a34a;
+  box-shadow: 0 10px 26px rgba(34, 197, 94, 0.7);
+  transform: translateY(-0.5px);
+}
 
     .pool-card, .teams-card {
       margin-top: 6px;
@@ -713,6 +760,68 @@ TEMPLATE = """
         margin-left: auto;
       }
     }
+
+    /* Sub selection modal */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15,23,42,0.82);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+    }
+    .modal-card {
+      background: radial-gradient(circle at top, #020617 0, #020617 48%, #020617 100%);
+      border-radius: 14px;
+      border: 1px solid rgba(148,163,184,0.4);
+      padding: 14px 14px 12px;
+      width: min(360px, 100% - 32px);
+      box-shadow: 0 18px 40px rgba(0,0,0,0.9);
+      color: var(--text-main);
+      font-size: 13px;
+    }
+    .modal-title {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    .modal-body {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 10px;
+    }
+    .modal-player {
+      font-family: "JetBrains Mono", SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 12px;
+      padding: 3px 6px;
+      border-radius: 6px;
+      background: rgba(15,23,42,0.9);
+      border: 1px solid rgba(148,163,184,0.4);
+      display: inline-block;
+      margin-top: 2px;
+      color: #e5e7eb;
+    }
+    .modal-select {
+      width: 100%;
+      margin-top: 8px;
+      margin-bottom: 10px;
+      padding: 5px 7px;
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle);
+      background: #020617;
+      color: var(--text-main);
+      font-size: 12px;
+    }
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+    .btn-small {
+      font-size: 11px;
+      padding: 4px 9px;
+    }
   </style>
 </head>
 <body>
@@ -733,13 +842,16 @@ TEMPLATE = """
       <div class="card">
         <textarea id="pool-input"
                   placeholder="Paste comma-separated or one name per line:
-CluelessGamer18, JJ22FTW, QuinnQuimby, ..."></textarea>
+lgmusicfan, LethalPilot, IceKing12323, ..."></textarea>
         <div class="button-row">
           <button onclick="loadPool()">
             <span>Load to pool</span>
           </button>
           <button class="secondary" onclick="clearTeams()">
             Clear teams
+          </button>
+          <button class="primary-green" onclick="recalc()">
+            Recalculate graphs
           </button>
         </div>
       </div>
@@ -752,7 +864,7 @@ CluelessGamer18, JJ22FTW, QuinnQuimby, ..."></textarea>
       </div>
     </section>
 
-        <section class="teams-card">
+    <section class="teams-card">
       <div class="section-label">Teams</div>
       <div class="teams-grid">
         {% for name in team_names %}
@@ -764,13 +876,6 @@ CluelessGamer18, JJ22FTW, QuinnQuimby, ..."></textarea>
           <div id="team-{{ name }}" class="player-list dropzone"></div>
         </div>
         {% endfor %}
-      </div>
-
-      <!-- New: explicit recompute button -->
-      <div class="button-row" style="margin-top: 8px;">
-        <button onclick="recalc()">
-          <span>Generate graphs</span>
-        </button>
       </div>
     </section>
   </aside>
@@ -787,6 +892,10 @@ CluelessGamer18, JJ22FTW, QuinnQuimby, ..."></textarea>
           {% else %}
             (no CSVs found)
           {% endif %}
+        </div>
+        <div class="last-updated">
+          Last graphs recalculated:
+          <span id="last-recalc-text">(not yet this session)</span>
         </div>
       </div>
       <div class="legend">
@@ -827,6 +936,11 @@ CluelessGamer18, JJ22FTW, QuinnQuimby, ..."></textarea>
   const TEAM_NAMES = {{ team_names | tojson }};
   let draggedEl = null;
 
+  // subs: { playerName: subIGN }
+  let subs = {};
+  // ignored: [ playerName, ... ]
+  let ignored = [];
+
   function createPlayerElement(name) {
     const div = document.createElement('div');
     div.className = 'player';
@@ -861,6 +975,10 @@ CluelessGamer18, JJ22FTW, QuinnQuimby, ..."></textarea>
       document.getElementById('team-' + t).innerHTML = '';
     });
 
+    // Reset subs/ignored when loading a new pool
+    subs = {};
+    ignored = [];
+
     const seen = new Set();
     for (const name of names) {
       if (seen.has(name)) continue;
@@ -868,14 +986,14 @@ CluelessGamer18, JJ22FTW, QuinnQuimby, ..."></textarea>
       pool.appendChild(createPlayerElement(name));
     }
 
-    // no auto recalc
+    // No automatic recalc here
   }
 
   function clearTeams() {
     TEAM_NAMES.forEach(t => {
       document.getElementById('team-' + t).innerHTML = '';
     });
-    // no auto recalc
+    // No automatic recalc here
   }
 
   // Drag & drop
@@ -908,7 +1026,7 @@ CluelessGamer18, JJ22FTW, QuinnQuimby, ..."></textarea>
       zone.classList.remove('drag-over');
       if (draggedEl) {
         zone.appendChild(draggedEl);
-        // no auto recalc
+        // No automatic recalc here
       }
     });
   });
@@ -926,27 +1044,106 @@ CluelessGamer18, JJ22FTW, QuinnQuimby, ..."></textarea>
     return teams;
   }
 
+  function showSubModal(player, candidates) {
+    // Remove any existing modal
+    const existing = document.getElementById('sub-modal');
+    if (existing) {
+      existing.remove();
+    }
+
+    const overlay = document.createElement('div');
+    overlay.id = 'sub-modal';
+    overlay.className = 'modal-overlay';
+
+    const limitedCandidates = [...candidates]
+    .sort((a, b) => a.localeCompare(b))
+    .slice(0, 200); // safety cap
+
+    overlay.innerHTML = `
+      <div class="modal-card">
+        <div class="modal-title">Missing stats for player</div>
+        <div class="modal-body">
+          The player below doesn't have stats in one or more games.
+          Choose a substitute whose stats should be used instead, or ignore this player.
+          <div class="modal-player">${player}</div>
+        </div>
+        <select class="modal-select" id="sub-select">
+          <option value="">-- Choose substitute player --</option>
+          ${limitedCandidates.map(c => `<option value="${c}">${c}</option>`).join('')}
+        </select>
+        <div class="modal-footer">
+          <button class="secondary btn-small" id="btn-ignore">Ignore player</button>
+          <button class="btn-small" id="btn-confirm">Use sub</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    const select = overlay.querySelector('#sub-select');
+    const confirmBtn = overlay.querySelector('#btn-confirm');
+    const ignoreBtn = overlay.querySelector('#btn-ignore');
+
+    confirmBtn.addEventListener('click', () => {
+      const chosen = select.value;
+      if (!chosen) {
+        return;
+      }
+      subs[player] = chosen;
+      // If this player was previously ignored, remove from ignored list
+      ignored = ignored.filter(p => p !== player);
+      overlay.remove();
+      recalc();  // user explicitly confirmed a sub
+    });
+
+    ignoreBtn.addEventListener('click', () => {
+      if (!ignored.includes(player)) {
+        ignored.push(player);
+      }
+      delete subs[player];
+      overlay.remove();
+      recalc();  // user explicitly chose to ignore
+    });
+  }
+
   async function recalc() {
     const teams = collectTeamsFromDOM();
     try {
       const resp = await fetch('/api/recalc', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ teams }),
+        body: JSON.stringify({ teams, subs, ignored }),
       });
       if (!resp.ok) return;
       const data = await resp.json();
+
+      if (data.needs_subs && data.missing_players && data.missing_players.length > 0) {
+        const player = data.missing_players[0];
+        const candidates = data.candidates || [];
+        showSubModal(player, candidates);
+        return;
+      }
+
       if (data.per_game_img) {
         document.getElementById('per-game-img').src = data.per_game_img;
       }
       if (data.diff_img) {
         document.getElementById('diff-img').src = data.diff_img;
       }
+      
+      //NEW: update "Last graphs recalculated"
+      if (data.last_recalc) {
+        const el = document.getElementById('last-recalc-text');
+        if (el) {
+            el.textContent = data.last_recalc;
+        }
+      }
     } catch (err) {
       console.error('Recalc error', err);
     }
   }
 
+  // No automatic recalc on load; user will click "Recalculate graphs"
 </script>
 </body>
 </html>
@@ -967,18 +1164,34 @@ def index():
 @app.route("/api/recalc", methods=["POST"])
 def api_recalc():
     data = request.get_json(force=True)
-    teams = data.get("teams", {})
+    teams = data.get("teams", {}) or {}
+    subs = data.get("subs", {}) or {}
+    ignored_list = data.get("ignored", []) or []
+    ignored = set(ignored_list)
 
+    # Ensure all 4 teams exist
     for name in TEAM_NAMES:
         teams.setdefault(name, [])
 
-    per_game_avgs, team_diffs = recompute_team_stats(teams)
+    per_game_avgs, team_diffs, missing_players = recompute_team_stats(
+        teams, subs=subs, ignored=ignored
+    )
+
+    # If some players have no stats and no sub/ignore, ask the frontend to handle it
+    if missing_players:
+        return jsonify(
+            ok=True,
+            needs_subs=True,
+            missing_players=sorted(list(missing_players)),
+            candidates=ALL_STAT_PLAYERS,
+        )
 
     per_game_img = plot_all_games(per_game_avgs)
     diff_img = plot_differentials(team_diffs)
 
     return jsonify(
         ok=True,
+        needs_subs=False,
         per_game_img=per_game_img,
         diff_img=diff_img,
     )
